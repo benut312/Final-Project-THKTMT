@@ -1,270 +1,303 @@
-# =============================================================================
-# Project: Simple Calculator - Biến tên mới, không trùng mã mẫu
-# =============================================================================
+# Dinh nghia dia chi thiet bi ngoai vi
+.eqv LED_RIGHT_ADDR     0xFFFF0010  # Dia chi LED 7 thanh ben phai
+.eqv LED_LEFT_ADDR      0xFFFF0011  # Dia chi LED 7 thanh ben trai
+.eqv KEYPAD_INPUT       0xFFFF0012  # Dia chi dau vao keypad
+.eqv KEYPAD_OUTPUT      0xFFFF0014  # Dia chi dau ra keypad
 
-.eqv SEG7_RIGHT, 0xFFFF0010        # Địa chỉ điều khiển LED 7 đoạn bên phải
-.eqv SEG7_LEFT,  0xFFFF0011        # Địa chỉ điều khiển LED 7 đoạn bên trái
-.eqv KPMATRIX_IN,  0xFFFF0012      # Bàn phím: ghi để quét hàng và kích hoạt ngắt
-.eqv KPMATRIX_OUT, 0xFFFF0014      # Bàn phím: đọc để lấy mã phím đang nhấn
+# Dinh nghia cac hang so
+.eqv ERROR_CODE         -1000       # Ma loi khi chia cho 0
+.eqv MODE_INPUT_FIRST   0           # Che do nhap so thu nhat
+.eqv MODE_INPUT_SECOND  1           # Che do nhap so thu hai
+.eqv MODE_SHOW_RESULT   2           # Che do hien thi ket qua
+.eqv KEYPAD_ENABLE      0x80        # Gia tri kich hoat keypad
 
 .data
-# Bảng mẫu cho LED 7 đoạn: 0–9, 'E', '-'
-led7_map:
-    .byte 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F, 0x79, 0x40
+# Bang ma hoa LED 7 thanh cho cac chu so va ky hieu
+led_patterns:    .byte 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F, 0x79, 0x40
+# Chi so: 0='0', 1='1', 2='2', 3='3', 4='4', 5='5', 6='6', 7='7', 8='8', 9='9', 10='E'(loi), 11='-'(am)
 
-# Bảng mã scan keypad (0–F)
-kp_decode:
-    .word 0x11, 0x21, 0x41, 0x81, 0x12, 0x22, 0x42, 0x82, 0x14, 0x24, 0x44, 0x84, 0x18, 0x28, 0x48, 0x88
+# Bang tra cuu ma phim keypad theo thu tu 0-F (phim 0 den phim F)
+key_matrix:      .word 0x11, 0x21, 0x41, 0x81, 0x12, 0x22, 0x42, 0x82, 0x14, 0x24, 0x44, 0x84, 0x18, 0x28, 0x48, 0x88
 
-# Biến trạng thái (đặt tên mới hoàn toàn)
-numA:      .word 0    # toán hạng đầu tiên
-op_code:   .word 0    # mã phép toán
-num_disp:  .word 0    # số đang nhập hoặc kết quả hiển thị
-step:      .word 0    # trạng thái (0: nhập numA, 1: nhập numB, 2: xem kết quả)
+# Cau truc du lieu luu tru trang thai may tinh
+calculator_state:
+    first_operand:   .word 0     # Toan hang dau tien
+    operation_code:  .word 0     # Ma phep toan (1:+, 2:-, 3:*, 4:/, 5:%)
+    display_value:   .word 0     # Gia tri hien thi hien tai tren LED
+    calc_mode:       .word 0     # Che do hoat dong cua may tinh
 
 .text
 .globl main
+
+
 main:
-    li s0, 0      # s0 = numA
-    li s2, 0      # s2 = op_code
-    li s3, 0      # s3 = num_disp
-    li s4, 0      # s4 = step
+   
+    jal init_calculator      # Khoi tao trang thai ban dau
+    jal init_keypad_interrupt # Thiet lap ngat ban phim
+    jal refresh_display      # Cap nhat hien thi LED
 
-    la s8, numA
-    sw s0, 0(s8)
-    la s9, op_code
-    sw s2, 0(s9)
-    la s10, num_disp
-    sw s3, 0(s10)
-    la s11, step
-    sw s4, 0(s11)
+main_loop:
+    wfi           # Cho ngat (wait for interrupt)
+    j main_loop   # Lap vo han de cho ngat xay ra
 
-    jal int_setup
-    jal show_display
 
-main_wait:
-    nop
-    j main_wait
-
-# ------------------------------------------
-# Ngắt ngoại vi bàn phím
-# ------------------------------------------
-int_setup:
-    la t0, keyboard_irq
-    csrrw zero, utvec, t0
-    li t1, 0x100
-    csrrs zero, uie, t1
-    csrrsi zero, ustatus, 1
-    li t0, KPMATRIX_IN
-    li t1, 0x80
-    sb t1, 0(t0)
+init_calculator:
+    la t0, calculator_state  # Lay dia chi cau truc trang thai
+    sw zero, 0(t0)          # first_operand = 0
+    sw zero, 4(t0)          # operation_code = 0
+    sw zero, 8(t0)          # display_value = 0
+    sw zero, 12(t0)         # calc_mode = 0
     ret
 
-# ------------------------------------------
-# Hiển thị 2 số cuối lên 2 led 7 đoạn
-# ------------------------------------------
-show_display:
-    la t5, led7_map
-    mv t0, s3
-    li t1, -1000
-    beq t0, t1, disp_err
-    li t1, 100
-    rem t0, t0, t1
 
-    bgez t0, disp_pos
-    li t1, 11
-    add t1, t5, t1
-    lb t2, 0(t1)
-    li t3, SEG7_LEFT
-    sb t2, 0(t3)
-    neg t0, t0
-    j disp_digits
-
-disp_pos:
-    li t1, 10
-    div t2, t0, t1
-    add t2, t5, t2
-    lb t3, 0(t2)
-    li t4, SEG7_LEFT
-    sb t3, 0(t4)
-
-disp_digits:
-    li t1, 10
-    rem t2, t0, t1
-    add t2, t5, t2
-    lb t3, 0(t2)
-    li t4, SEG7_RIGHT
-    sb t3, 0(t4)
+init_keypad_interrupt:
+    la t0, interrupt_handler    # Lay dia chi ham xu ly ngat
+    csrrw zero, utvec, t0       # Dat dia chi ISR vao thanh ghi ngat
+    li t1, 0x100                # Mask cho ngat timer
+    csrrs zero, uie, t1         # Bat ngat timer
+    csrrsi zero, ustatus, 1     # Bat ngat toan cuc
+    
+    # Kich hoat che do quet keypad
+    li t0, KEYPAD_INPUT         # Lay dia chi dau vao keypad
+    li t1, KEYPAD_ENABLE        # Gia tri kich hoat
+    sb t1, 0(t0)               # Gui tin hieu kich hoat
     ret
 
-disp_err:
-    la t5, led7_map
-    li t1, 10
-    add t1, t5, t1
-    lb t2, 0(t1)
-    li t3, SEG7_LEFT
-    sb t2, 0(t3)
-    li t3, SEG7_RIGHT
-    sb t2, 0(t3)
+
+refresh_display:
+    la t0, calculator_state     # Lay dia chi trang thai may tinh
+    lw t1, 8(t0)               # Lay gia tri display_value
+    
+    # Kiem tra ma loi chia cho 0
+    li t2, ERROR_CODE          # Lay ma loi
+    beq t1, t2, show_error     # Neu co loi thi hien thi "EE"
+    
+    # Chuan bi hien thi so binh thuong
+    la t3, led_patterns        # Lay dia chi bang ma LED
+    li t4, 100                 # Chia lay du 100
+    rem t1, t1, t4             # Chi lay 2 chu so cuoi cung
+    
+    # Xu ly so am
+    bgez t1, display  # Neu so duong thi bo qua
+    
+    # Hien thi dau '-' cho so am
+    li t5, 11                  # Chi so cua dau '-' trong bang
+    add t5, t3, t5             
+    lb t6, 0(t5)               # Lay ma LED cua dau '-'
+    li t5, LED_LEFT_ADDR       
+    sb t6, 0(t5)               # Hien thi dau '-' tren LED trai
+    neg t1, t1                 
+    j display_units           
+    
+display:
+    # Hien thi chu so hang chuc
+    li t4, 10                  
+    div t5, t1, t4             # Lay chu so hang chuc
+    add t5, t3, t5             
+    lb t6, 0(t5)              
+    li t5, LED_LEFT_ADDR       
+    sb t6, 0(t5)               # Hien thi tren LED trai
+    
+display_units:
+    # Hien thi chu so hang don vi
+    li t4, 10                  
+    rem t5, t1, t4             # Lay chu so hang don vi
+    add t5, t3, t5            
+    lb t6, 0(t5)               # Lay ma LED
+    li t5, LED_RIGHT_ADDR     
+    sb t6, 0(t5)               
     ret
 
-# ------------------------------------------
-# Tính toán kết quả (numA, numB, op_code)
-# ------------------------------------------
-calc_proc:
-    li t0, 1
-    beq s2, t0, calc_add
-    li t0, 2
-    beq s2, t0, calc_sub
-    li t0, 3
-    beq s2, t0, calc_mul
-    li t0, 4
-    beq s2, t0, calc_div
-    li t0, 5
-    beq s2, t0, calc_mod
-    j calc_done
+show_error:
+    # Hien thi "EE" khi co loi
+    la t3, led_patterns        # Lay dia chi bang ma LED
+    li t4, 10                  # Chi so cua chu 'E'
+    add t4, t3, t4             # Tinh dia chi pattern chu 'E'
+    lb t5, 0(t4)               # Lay ma LED cua chu 'E'
+    li t6, LED_LEFT_ADDR       # Dia chi LED trai
+    sb t5, 0(t6)               # Hien thi 'E' tren LED trai
+    li t6, LED_RIGHT_ADDR      # Dia chi LED phai
+    sb t5, 0(t6)               # Hien thi 'E' tren LED phai
+    ret
+    
+perform_calculation:
+    la t0, calculator_state    # Lay dia chi trang thai may tinh
+    lw t1, 0(t0)              # Lay first_operand
+    lw t2, 4(t0)              # Lay operation_code
+    lw t3, 8(t0)              # Lay display_value (toan hang thu 2)
+    
+    # Kiem tra tung phep toan bang cach so sanh operation_code
+    li t4, 1                  # Ma phep cong
+    beq t2, t4, do_add        # Neu la phep cong
+    li t4, 2                  # Ma phep tru
+    beq t2, t4, do_sub        # Neu la phep tru
+    li t4, 3                  # Ma phep nhan
+    beq t2, t4, do_mul        # Neu la phep nhan
+    li t4, 4                  # Ma phep chia
+    beq t2, t4, do_div        # Neu la phep chia
+    li t4, 5                  # Ma phep chia lay du
+    beq t2, t4, do_mod        # Neu la phep chia lay du
+    j calc_end                # Khong co phep toan nao
 
-calc_add:
-    add s0, s0, s1
-    j calc_done
-calc_sub:
-    sub s0, s0, s1
-    j calc_done
-calc_mul:
-    mul s0, s0, s1
-    j calc_done
-calc_div:
-    beq s1, zero, calc_div0
-    div s0, s0, s1
-    j calc_done
-calc_mod:
-    beq s1, zero, calc_div0
-    rem s0, s0, s1
-    j calc_done
-calc_div0:
-    li s0, -1000
-calc_done:
+do_add:
+    add t1, t1, t3            # Thuc hien phep cong
+    j calc_end
+do_sub:
+    sub t1, t1, t3            # Thuc hien phep tru
+    j calc_end
+do_mul:
+    mul t1, t1, t3            # Thuc hien phep nhan
+    j calc_end
+do_div:
+    beq t3, zero, calc_error  # Kiem tra chia cho 0
+    div t1, t1, t3            # Thuc hien phep chia
+    j calc_end
+do_mod:
+    beq t3, zero, calc_error  # Kiem tra chia cho 0
+    rem t1, t1, t3            # Thuc hien phep chia lay du
+    j calc_end
+calc_error:
+    li t1, ERROR_CODE         # Gan ma loi
+calc_end:
+    # Luu ket qua vao display_value
+    la t0, calculator_state   # Lay dia chi trang thai
+    sw t1, 8(t0)             # Cap nhat display_value
     ret
 
-# ------------------------------------------
-# Trình phục vụ ngắt ISR (Interrupt Service Routine)
-# ------------------------------------------
-keyboard_irq:
-    addi sp, sp, -48
-    sw ra,  0(sp)
-    sw t0,  4(sp)
-    sw t1,  8(sp)
+
+interrupt_handler:
+    # Luu context (cac thanh ghi dang su dung)
+    addi sp, sp, -32          # Tao khong gian tren stack
+    sw ra, 0(sp)              # Luu return address
+    sw t0, 4(sp)              # Luu cac thanh ghi tam
+    sw t1, 8(sp)
     sw t2, 12(sp)
     sw t3, 16(sp)
     sw t4, 20(sp)
     sw t5, 24(sp)
     sw t6, 28(sp)
-    sw s0, 32(sp)
-    sw s2, 36(sp)
-    sw s3, 40(sp)
-    sw s4, 44(sp)
 
-    la s8, numA
-    lw s0, 0(s8)
-    la s9, op_code
-    lw s2, 0(s9)
-    la s10, num_disp
-    lw s3, 0(s10)
-    la s11, step
-    lw s4, 0(s11)
+    # Quet va giai ma phim duoc nhan
+    jal scan_keypad           # Goi ham quet keypad
+    bltz t0, exit_interrupt   # Neu khong co phim nao thi thoat
+    
+    # Phan loai phim: so (0-9) hay toan tu (A-F)
+    li t1, 9                  # Nguong phan chia
+    ble t0, t1, handle_digit  # Neu <= 9 thi la phim so
+    j handle_operator         # Nguoc lai la phim toan tu
 
-    li t1, 0
-    li t3, 1
-kp_scan:
-    li t0, KPMATRIX_IN
-    sb t3, 0(t0)
-    li t0, KPMATRIX_OUT
-    lbu t1, 0(t0)
-    bne t1, zero, kp_found
-    slli t3, t3, 1
-    li t0, 0x10
-    blt t3, t0, kp_scan
-    j irq_done
+# Xu ly phim so (0-9)
+handle_digit:
+    la t1, calculator_state   # Lay dia chi trang thai
+    lw t2, 12(t1)            # Lay calc_mode
+    
+    # Neu dang o che do hien thi ket qua, reset de nhap so moi
+    li t3, MODE_SHOW_RESULT   # Ma che do hien thi ket qua
+    bne t2, t3, add_digit_to_display  # Neu khong phai che do ket qua
+    sw zero, 8(t1)           # Reset display_value = 0
+    sw zero, 12(t1)          # Chuyen ve che do nhap so dau tien
+    
+add_digit_to_display:
+    lw t2, 8(t1)             # Lay gia tri hien tai tren display
+    li t3, 10                # Nhan voi 10
+    mul t2, t2, t3           # Dich cac chu so sang trai
+    add t2, t2, t0           # Them chu so moi vao cuoi
+    sw t2, 8(t1)             # Cap nhat display_value
+    j refresh_and_exit       # Cap nhat hien thi va thoat
 
-kp_found:
-    la t0, kp_decode
-    li t6, 0
-    li t2, 16
-kp_decode_loop:
-    lw t3, 0(t0)
-    beq t3, t1, kp_decode_ok
-    addi t0, t0, 4
-    addi t6, t6, 1
-    addi t2, t2, -1
-    bnez t2, kp_decode_loop
-    li t6, -1
-kp_decode_ok:
-    blt t6, zero, irq_done
+# Xu ly phim toan tu (A-F)
+handle_operator:
+    li t1, 15                # Ma phim F (dau =)
+    beq t0, t1, handle_equals # Neu la phim = thi xu ly rieng
+    
+    # Xu ly cac phim toan tu (A, B, C, D, E)
+    la t1, calculator_state   # Lay dia chi trang thai
+    lw t2, 12(t1)            # Lay calc_mode
+    
+    # Neu da co phep toan truoc do, tinh ket qua truoc khi luu phep toan moi
+    li t3, MODE_INPUT_SECOND  # Ma che do nhap so thu hai
+    bne t2, t3, store_operation # Neu chua co phep toan truoc
+    jal perform_calculation   # Tinh ket qua phep toan truoc
+    
+store_operation:
+    la t1, calculator_state   # Lay dia chi trang thai
+    lw t2, 8(t1)             # Lay gia tri hien thi
+    sw t2, 0(t1)             # Luu vao first_operand
+    addi t3, t0, -9          # Chuyen doi A-E (10-14) thanh 1-5
+    sw t3, 4(t1)             # Luu operation_code
+    sw zero, 8(t1)           # Reset display_value
+    li t3, MODE_INPUT_SECOND  # Chuyen sang che do nhap so thu hai
+    sw t3, 12(t1)            # Cap nhat calc_mode
+    j refresh_and_exit       # Cap nhat hien thi va thoat
 
-    li t1, 9
-    bgt t6, t1, kp_is_op
+handle_equals:
+    la t1, calculator_state   # Lay dia chi trang thai
+    lw t2, 12(t1)            # Lay calc_mode
+    li t3, MODE_SHOW_RESULT   # Ma che do hien thi ket qua
+    beq t2, t3, refresh_and_exit # Neu da o che do ket qua thi bo qua
+    
+    jal perform_calculation   # Thuc hien phep tinh
+    la t1, calculator_state   # Lay dia chi trang thai
+    li t2, MODE_SHOW_RESULT   # Chuyen sang che do hien thi ket qua
+    sw t2, 12(t1)            # Cap nhat calc_mode
 
-# --------- Nếu là số ---------
-    li t1, 2
-    bne s4, t1, kp_append_digit
-    li s3, 0
-    li s4, 0
-kp_append_digit:
-    li t1, 10
-    mul s3, s3, t1
-    add s3, s3, t6
-    jal show_display
-    j kp_save_exit
+refresh_and_exit:
+    jal refresh_display       # Cap nhat hien thi LED
 
-# --------- Nếu là toán tử hoặc '=' ---------
-kp_is_op:
-    li t1, 15
-    beq t6, t1, kp_is_eq
-    li t1, 2
-    bne s4, t1, kp_storeA
-    mv s0, s3
-kp_storeA:
-    mv s0, s3
-    addi s2, t6, -9
-    li s3, 0
-    li s4, 1
-    jal show_display
-    j kp_save_exit
-
-kp_is_eq:
-    li t1, 2
-    beq s4, t1, irq_done
-    mv s1, s3
-    jal calc_proc
-    mv s3, s0
-    li s4, 2
-    jal show_display
-
-kp_save_exit:
-    la s8, numA
-    sw s0, 0(s8)
-    la s9, op_code
-    sw s2, 0(s9)
-    la s10, num_disp
-    sw s3, 0(s10)
-    la s11, step
-    sw s4, 0(s11)
-
-irq_done:
-    lw ra,  0(sp)
-    lw t0,  4(sp)
-    lw t1,  8(sp)
+exit_interrupt:
+    # Khoi phuc context (cac thanh ghi da luu)
+    lw ra, 0(sp)             # Khoi phuc return address
+    lw t0, 4(sp)             # Khoi phuc cac thanh ghi tam
+    lw t1, 8(sp)
     lw t2, 12(sp)
     lw t3, 16(sp)
     lw t4, 20(sp)
     lw t5, 24(sp)
     lw t6, 28(sp)
-    lw s0, 32(sp)
-    lw s2, 36(sp)
-    lw s3, 40(sp)
-    lw s4, 44(sp)
-    addi sp, sp, 48
-    li t0, KPMATRIX_IN
-    li t1, 0x80
-    sb t1, 0(t0)
-    uret
+    addi sp, sp, 32          # Tra lai khong gian stack
+    
+    # Tai kich hoat che do quet keypad
+    li t0, KEYPAD_INPUT      # Dia chi dau vao keypad
+    li t1, KEYPAD_ENABLE     # Gia tri kich hoat
+    sb t1, 0(t0)            # Gui tin hieu kich hoat lai
+    uret                     # Tro ve tu ngat
+
+
+scan_keypad:
+    li t1, 1                 # Bit mask bat dau (0000 0001)
+    li t2, 0                 # Chi so hien tai
+    
+scan_loop:
+    li t0, KEYPAD_INPUT      # Dia chi dau vao keypad
+    sb t1, 0(t0)            # Gui tin hieu quet hang/cot hien tai
+    li t0, KEYPAD_OUTPUT     # Dia chi dau ra keypad
+    lbu t3, 0(t0)           # Doc ket qua quet
+    bnez t3, key_found      # Neu co phim duoc nhan
+    
+    slli t1, t1, 1          # Dich bit mask sang trai (0001 -> 0010 -> 0100...)
+    addi t2, t2, 1          # Tang chi so
+    li t0, 16               # Tong so vi tri quet
+    blt t2, t0, scan_loop   # Lap lai neu chua quet het
+    
+    li t0, -1               # Khong tim thay phim nao
+    ret
+
+key_found:
+    # Giai ma phim dua tren bang key_matrix
+    la t4, key_matrix       # Lay dia chi bang tra cuu
+    li t5, 0                # Bo dem cho vong lap
+    
+decode_loop:
+    lw t6, 0(t4)            # Lay pattern tu bang
+    beq t3, t6, decode_found # So sanh voi ket qua doc duoc
+    addi t4, t4, 4          # Chuyen den phan tu tiep theo trong bang
+    addi t5, t5, 1          # Tang bo dem
+    li t6, 16               # Tong so phan tu trong bang
+    blt t5, t6, decode_loop # Lap lai neu chua kiem tra het
+    
+    li t0, -1               # Khong tim thay trong bang
+    ret
+
+decode_found:
+    mv t0, t5               # Tra ve chi so cua phim (0-15)
+    ret
